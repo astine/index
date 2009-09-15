@@ -197,7 +197,7 @@
   (tag-file (file-id-of file) tag tag-category))
 
 (defmethod tag-file ((file pathname) tag &optional (tag-category ""))
-  (tag-file (file-by-pathname patname) tag tag-category))
+  (tag-file (file-by-pathname pathname) tag tag-category))
 
 (defun list-files-by-tag (tag &optional tag-category)
   (with-rucksack (rs *tagfs-root*)
@@ -222,3 +222,18 @@
   #+LISPWORKS system:*line-arguments-list*
   #+CMU extensions:*command-line-words*
  )
+
+'&parameters   
+'&filelist
+
+(defun parse-cli-options (options option-pattern)
+  (let ((boolean-options (subseq option-pattern 0 (position '&parameters option-pattern)))
+	(param-options (subseq option-pattern 
+			       (1+ (position '&parameters option-pattern))
+			       (position '&filelist option-pattern)))
+	(rest-option (if (find '&filelist option-pattern) (car (last option-pattern))))
+	(parsed-options nil)
+	(rest nil))
+    (dolist (option options)
+      (
+      
