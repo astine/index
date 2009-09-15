@@ -8,6 +8,14 @@
   `(let ((it ,test))
      (if it ,@forms)))
 
+(defmacro doseq ((var sequence) &body body)
+  (let ((index (gensym))
+	(seq (gensym)))
+    `(let ((,seq ,sequence))
+       (dotimes (,index (length ,seq))
+	 (let ((,var (elt ,seq,index)))
+	   ,@body)))))
+
 (defvar *tagfs-root* #p"/home/illuminati/tagfs-test")
 
 (labels ((split-mime (mime-string)
@@ -223,8 +231,35 @@
   #+CMU extensions:*command-line-words*
  )
 
-'&parameters   
-'&filelist
+(defvar *bool-params* nil)
+(defvar *file-params* nil)
+
+(defvar *parsed-options* nil)
+(defvar *files* nil)
+
+(defun parse-options ()
+  "parses an option string '-alf' or '--file'"
+  (let ((option (pop *cli-options*)))
+    (cond ((scan "^-[^-]+$" option)
+	   (doseq (char (subseq option 1))
+	     (when (find (string char) *file-params* :test #'equal)
+	       (if (= (length option) (1+ (position char option)))
+		   (push (cons (string char)
+			       (pop *cli-options*))
+			 *parsed-options*)
+		   (push (cons (string char)
+			       (subseq option (1+ (position char option))))
+			 *parsed-options*))
+	       (return))
+	     (push (string char) *parsed-options*)))
+	  ((scan "^--[^-]+$" option)
+	   (if (find (subseq option 2) *file-params* :test #'equal)
+	       (push (cons (subseq option 2) 
+			   (pop *cli-options*))
+		     *parsed-options*)
+	       (push (subseq option 2) *parsed-options*)))
+	  (t (push option *files*))))
+  (unless (null *cli-options*) (parse-options)))
 
 (defun parse-cli-options (options option-pattern)
   (let ((boolean-options (subseq option-pattern 0 (position '&parameters option-pattern)))
@@ -236,4 +271,3 @@
 	(rest nil))
     (dolist (option options)
       (
-      
