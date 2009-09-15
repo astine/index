@@ -5,7 +5,6 @@
   :version "0.0.1"
   :serial t
   :components ((:file "index"))
-  :depends-on (:cl
-	       :cl-fad
+  :depends-on (:cl-fad
 	       :trivial-shell
 	       :rucksack))
