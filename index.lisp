@@ -16,6 +16,14 @@
 	 (let ((,var (elt ,seq,index)))
 	   ,@body)))))
 
+(defmacro hash (&rest pairs)
+  (unless (evenp (list-length pairs)) (warn "Uneven pairs in hash declairation"))
+  `(let ((hash (make-hash-table :test #'equal)))
+     ,@(maplist (lambda (key-val)
+		  `(setf (gethash ,(first key-val) hash) ,(second key-val)))
+		pairs)
+     hash))
+
 (defvar *tagfs-root* #p"/home/illuminati/tagfs-test")
 
 (labels ((split-mime (mime-string)
@@ -231,50 +239,50 @@
   #+CMU extensions:*command-line-words*
  )
 
-(defvar *bool-params* nil)
-(defvar *file-params* nil)
-
-(defvar *parsed-options* nil)
-(defvar *files* nil)
-
 (defmacro dispatch-on-param (parameter bool-case file-case)
   `(let ((parameter ,parameter))
-     (cond ((find parameter *bool-params* :test #'equal)
+     (cond ((find parameter bool-params :test #'equal)
 	    ,@bool-case)
-	   ((find parameter *file-params* :test #'equal)
+	   ((find parameter file-params :test #'equal)
 	    ,@file-case)
 	   (t (warn (format "Bad parameter: ~A~%" parameter))))))
 
-(defun push-option (option value)
-  (push (cons option value) *parsed-options*))
-  
-(defun parse-options ()
-  "parses an option string '-alf' or '--file'"
-  (let ((option (pop *cli-options*)))
-    (cond ((scan "^-[^-]+$" option)
-	   (doseq (char (subseq option 1))
-	     (dispatch-on-param (string char)
-				((push-option parameter t))
-				((if (= (length option) (1+ (position char option)))
-				     (push-option parameter (pop *cli-options*))
-				     (push-option parameter 
-						  (subseq option (1+ (position char option)))))
-				 (return)))))
-	  ((scan "^--[^-]+$" option)
-	   (dispatch-on-param (subseq option 2)
-			      ((push-option parameter (pop *cli-options*)))
-			      ((push-option parameter t))))
-	  (t (push option *files*))))
-  (unless (null *cli-options*) (parse-options)))
-
-'&parameters
-
 (defun parse-cli-options (options option-pattern)
-  (let ((*cli-options* options)
-	(*bool-params* (subseq option-pattern 0 (position '&parameters option-pattern)))
-	(*file-params* (subseq option-pattern 
-			       (1+ (position '&parameters option-pattern))))
-	(*parsed-options* nil)
-	(*files* nil))
-    (parse-options)
-    (values *parsed-options* *files*)))
+  (let ((bool-params (subseq option-pattern 0 (position '&parameters option-pattern)))
+	(file-params (subseq option-pattern 
+			     (1+ (position '&parameters option-pattern))))
+	(parsed-options nil)
+	(files nil))
+    (labels ((push-option (option value)
+	       (push (cons option value) parsed-options))
+	     (two-dashes? (string)
+	       (and (equal (char string 0) #\-)
+		    (equal (char string 1) #\-)
+		    (not (equal (char string 2) #\-))))
+	     (one-dash? (string)
+	       (and (equal (char string 0) #\-)
+		    (not (equal (char string 1) #\-)))))
+      (loop while options do
+	(let ((option (pop options)))
+	  (cond ((one-dash? option)
+		 (doseq (char (subseq option 1))
+		   (dispatch-on-param 
+		    (string char)
+		    ((push-option parameter t))
+		    ((if (= (length option) (1+ (position char option)))
+			 (push-option parameter (pop options))
+			 (push-option parameter 
+				      (subseq option (1+ (position char option)))))
+		     (return)))))
+		((two-dashes? option)
+		 (dispatch-on-param 
+		  (subseq option 2)
+		  ((push-option parameter (pop options)))
+		  ((push-option parameter t))))
+		(t (push option files)))))
+    (values parsed-options files))))
+
+(defstruct option-descriptor symbol long-name short-name value)
+
+;(defmacro with-cli-options ((&optional *cli-options*) option-list &body body)
+  ;(let ((options nil
