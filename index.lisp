@@ -4,6 +4,11 @@
 
 (in-package :tagfs)
 
+(defmacro expand-list (list)
+  (if (listp list)
+      `(list ,@list)
+       list))
+
 (defmacro aif (test &rest forms)
   `(let ((it ,test))
      (if it ,@forms)))
@@ -245,40 +250,76 @@
   #+CMU extensions:*command-line-words*
  )
 
-(defmacro do-parsed-options ((options bool-params file-params files) &body body)
+(defmacro do-parsed-options ((cli-options bool-params file-params files) &body body)
   "Given a list of options passed from the the cli and two lists describing how the options
    should be parsed, parses the list and operates on the resulting option/value pairs."
-  (with-gensyms (option)
+  (with-gensyms (option options)
     (labels ((dispatch-on-option (option bool-case file-case)
 	       `(let ((option ,option))
-		  (cond ((find option ,bool-params :test #'equal)
+		  (cond ((find option (expand-list ,bool-params) :test #'equal)
 			 ,bool-case)
-			((find option ,file-params :test #'equal)
+			((find option (expand-list ,file-params) :test #'equal)
 			 ,file-case)
-			(t (warn (format "Bad option: ~A~%" option)))))))
-      `(loop while ,options do
-	    (let ((,option (pop ,options)))
-	      (cond ((and (equal (char ,option 0) #\-)
-			  (not (equal (char ,option 1) #\-)))
-		     (doseq (char (subseq ,option 1))
+			(t (warn (format nil "Bad option: ~A~%" option)))))))
+      `(let ((,options (expand-list ,cli-options)))
+	 (loop while ,options do
+	      (let ((,option (pop ,options)))
+		(cond ((equal ,option "--")
+		       (dolist (,option ,options)
+			 (push ,option ,files))
+		       (return))
+		      ((and (equal (char ,option 0) #\-)
+			    (not (equal (char ,option 1) #\-)))
+		       (doseq (char (subseq ,option 1))
+			 ,(dispatch-on-option 
+			   `(string char)
+			   `(let ((value t)) ,@body)
+			   `(progn
+			      (if (= (length ,option) (1+ (position char ,option)))
+				  (let ((value (pop ,options))) ,@body)
+				  (let ((value (subseq ,option (1+ (position char ,option))))) 
+				    ,@body))
+			      (return)))))
+		      ((and (equal (char ,option 0) #\-)
+			    (equal (char ,option 1) #\-)
+			    (not (equal (char ,option 2) #\-)))
 		       ,(dispatch-on-option 
-			 `(string char)
+			 `(subseq ,option 2)
 			 `(let ((value t)) ,@body)
-			 `(progn
-			    (if (= (length ,option) (1+ (position char ,option)))
-				(let ((value (pop ,options))) ,@body)
-				(let ((value (subseq ,option (1+ (position char ,option))))) 
-				  ,@body))
-			    (return)))))
-		    ((and (equal (char ,option 0) #\-)
-			  (equal (char ,option 1) #\-)
-			  (not (equal (char ,option 2) #\-)))
-		     ,(dispatch-on-option 
-		       `(subseq ,option 2)
-		       `(let ((value (pop ,options))) ,@body)
-		       `(let ((value t)) ,@body)))
-		    (t (push ,option ,files))))))))))
-  
+			 `(let ((value (pop ,options))) ,@body)))
+		      (t (push ,option ,files)))))))))
+
+(defmacro with-cli-options ((&optional (cli-options *cli-options*) (files 'files)) option-variables &body body)
+  "Binds a series of vairables to values passed in through cli options"
+  (let ((bool-params nil)
+	(file-params nil)
+	(var-bindings nil)
+	(var-setters nil)
+	(file-vars? nil))
+    (dolist (symbol option-variables)
+      (if (eql symbol '&file-parameters)
+	  (setf file-vars? t)
+	  (flet ((so-not-used? (so)
+		   (unless (or (find so bool-params :test #'equal) 
+			       (find so file-params :test #'equal))
+		     so)))
+	    (let ((long-option (string-downcase (symbol-name symbol)))
+		  (short-option (aif (so-not-used? (string-downcase (subseq (symbol-name symbol) 0 1)))
+				  it
+				  (so-not-used? (subseq (symbol-name symbol) 0 1)))))
+	      (push `(,symbol nil) var-bindings)
+	      (push `((or (equal option ,long-option) ,(if short-option `(equal option ,short-option)))
+		      (setf ,symbol value))
+		    var-setters)
+	      (if file-vars?
+		  (progn (push long-option file-params)
+			 (if short-option (push short-option file-params)))
+		  (progn (push long-option bool-params)
+			 (if short-option (push short-option bool-params))))))))
+    `(let ,(cons `(,files nil) var-bindings)
+       (do-parsed-options (,cli-options ,bool-params ,file-params ,files)
+	 (cond ,@var-setters))
+       ,@body)))
 
 (defun parse-cli-options (options option-pattern)
   (let ((bool-params (subseq option-pattern 0 (position '&parameters option-pattern)))
@@ -292,7 +333,3 @@
       (push (cons option value) parsed-options))
     (values parsed-options files)))
 
-(defstruct option-descriptor symbol long-name short-name value)
-
-;(defmacro with-cli-options ((&optional *cli-options*) option-list &body body)
-  ;(let ((options nil
