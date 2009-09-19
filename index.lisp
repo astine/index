@@ -333,3 +333,10 @@
       (push (cons option value) parsed-options))
     (values parsed-options files)))
 
+;;---------------------------------------
+
+(with-cli-options () (index tag query &file-parameters path)
+  (unless path (setf path (pop files)))
+  (cond (index (init-db path)
+	       (prune-db path))
+	(tag 
