@@ -1,3 +1,11 @@
+#! /usr/bin/sbcl --script
+
+(load "/home/illuminati/.sbclrc")
+
+(require 'cl-fad)
+(require 'trivial-shell)
+(require 'rucksack)
+
 (defpackage :tagfs
  (:nicknames :tagfs)
  (:use :cl :cl-fad :trivial-shell :rucksack))
@@ -39,16 +47,17 @@
 
 (labels ((split-mime (mime-string)
 	   (let ((slash (position #\/ mime-string)))
-	     (if (null slash) (error (format nil "Bad mime-type: ~A" 
-					     mime-string))
-	     (values (subseq mime-string 0 slash)
-		     (subseq mime-string slash))))))
+	     (if (null slash) 
+		 (warn (format nil "Bad mime-type: ~A" 
+			       mime-string))
+		 (values (subseq mime-string 0 slash)
+			 (subseq mime-string slash))))))
  
   (defun derive-filetype (pathname)
     (multiple-value-bind (type subtype)
 	(split-mime (shell-command 
 		     (format nil 
-			     "file --mime-type -b ~A" 
+			     "file --mime-type -b '~A'" 
 			     (namestring pathname))))
       (cond ((equal type "text") :text)
 	    ((equal type "image") :image)
@@ -78,7 +87,7 @@
       :value-type persistent-object
       :key-type pathname))
 
-(with-rucksack (rs *tagfs-root* :if-exists :supersede)
+(with-rucksack (rs *tagfs-root*)
   (with-transaction ()
     (defclass tag ()
       ((file-id      :initarg :file-id :accessor file-id-of
@@ -97,7 +106,7 @@
         when looking for files.")
       (:index t)
       (:metaclass persistent-class))
-      
+    
     (defclass file-details ()
       ((file-id      :initarg :file-id :accessor file-id-of
 		     :index :number-index
@@ -153,14 +162,18 @@
 
 (defvar *unique-file-id* 0)
 (defmethod initialize-instance :after ((file-details file-details) &key)
+  (print (filename-of file-details))
   (unless (file-exists-p (pathname-of file-details))
     (error (format nil 
 		   "Attempted to add file that doesn't exist.~% file: ~A"
 		   (pathname-of file-details))))
+  (print "ASDF2")
   (unless (slot-boundp file-details 'filetype)
     (setf (filetype-of file-details) 
 	  (derive-filetype (pathname-of file-details))))
-  (setf (file-id-of file-details) (incf *unique-file-id*)))
+  (print "ASDF3")
+  (setf (file-id-of file-details) (incf *unique-file-id*))
+  (print "FDSA"))
 
 (defmethod initialize-instance :after ((tag tag) &key)
   (let ((file-id (file-id-of tag)))
@@ -172,6 +185,7 @@
 		     "Attempted to add tag to file that doesn't exist.~% file-id: ~A~% tag: ~A"
 		     file-id tag)))))
 
+(defgeneric remove-file (file-details))
 (defmethod remove-file ((file-details file-details))
   (with-rucksack (rs *tagfs-root*)
     (with-transaction ()
@@ -184,7 +198,23 @@
 	    (rucksack-delete-object rs tag)))
 	(rucksack-delete-object rs file-details)))))
 
+(defun clear-db ()
+  (with-rucksack (rs *tagfs-root*)
+    (with-transaction ()
+      (let ((items nil)
+	    (count 0))
+	(rucksack-do-class (fd 'file-details :rucksack rs)
+	  (push fd items))
+	(dolist (fd items)
+	  (rucksack-delete-object rs fd))
+	(rucksack-do-class (tag 'tag :rucksack rs)
+	  (push tag items))
+	(dolist (tag items)
+	  (rucksack-delete-object rs tag)))))
+  (setf *unique-file-id* 0))
+
 (defun add-file (pathname &optional (update t) (notes ""))
+  (format t "Adding file: ~A~%" pathname)
   (if (and (not (directory-pathname-p pathname))
 	   (file-exists-p pathname))
       (with-rucksack (rs *tagfs-root*)
@@ -202,7 +232,8 @@
 			   :notes notes))))))
 
 (defun init-db (&optional (root *tagfs-root*))
-  (walk-directory root #'add-file))
+  (format t "Indexing directory: ~A~%" root)
+  (walk-directory root #'add-file :directories nil))
 
 (defun prune-db ()
   (with-rucksack (rs *tagfs-root*)
@@ -218,13 +249,13 @@
   (:documentation "Adds a tag to a file"))
 
 (defmethod tag-file ((file number) tag &optional (tag-category ""))
-  (make-instance 'tag :file-id file 'tag tag tag-category))
+  (make-instance 'tag :file-id file :tag tag :category tag-category))
 
 (defmethod tag-file ((file file-details) tag &optional (tag-category ""))
   (tag-file (file-id-of file) tag tag-category))
 
 (defmethod tag-file ((file pathname) tag &optional (tag-category ""))
-  (tag-file (file-by-pathname pathname) tag tag-category))
+  (tag-file (file-by-pathname file) tag tag-category))
 
 (defun list-files-by-tag (tag &optional tag-category)
   (with-rucksack (rs *tagfs-root*)
@@ -243,11 +274,11 @@
 ;;; User interface operations
 
 (defvar *cli-options*
-  #+SBCL sb-ext:*posix-argv*
-  #+CCL *command-line-argument-list*
-  #+CLISP ext:*args*
-  #+LISPWORKS system:*line-arguments-list*
-  #+CMU extensions:*command-line-words*
+  #+:SBCL sb-ext:*posix-argv*
+  #+:CCL *command-line-argument-list*
+  #+:CLISP ext:*args*
+  #+:LISPWORKS system:*line-arguments-list*
+  #+:CMU extensions:*command-line-words*
  )
 
 (defmacro do-parsed-options ((cli-options bool-params file-params files) &body body)
@@ -317,7 +348,7 @@
 		  (progn (push long-option bool-params)
 			 (if short-option (push short-option bool-params))))))))
     `(let ,(cons `(,files nil) var-bindings)
-       (do-parsed-options (,cli-options ,bool-params ,file-params ,files)
+       (do-parsed-options (,(rest cli-options) ,bool-params ,file-params ,files)
 	 (cond ,@var-setters))
        ,@body)))
 
@@ -337,6 +368,11 @@
 
 (with-cli-options () (index tag query &file-parameters path)
   (unless path (setf path (pop files)))
-  (cond (index (init-db path)
-	       (prune-db path))
-	(tag 
+  (let ((*tagfs-root* path))
+    (cond (index (init-db)
+		 (prune-db))
+	  (tag (tag-file path (first files)))
+	  (query (print (list-files-by-tag (first files)))))))
+	 
+
+(quit)
