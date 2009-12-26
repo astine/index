@@ -1,16 +1,10 @@
-#! /usr/bin/sbcl --script
+;;; index.lisp - index 2009 (C) Andrew Stine
 
-(load "/home/illuminati/.sbclrc")
+(defpackage :index
+ (:nicknames :index)
+ (:use #:cl #:cl-fad #:trivial-shell #:unix-options #:rucksack))
 
-(require 'cl-fad)
-(require 'trivial-shell)
-(require 'rucksack)
-
-(defpackage :tagfs
- (:nicknames :tagfs)
- (:use :cl :cl-fad :trivial-shell :rucksack))
-
-(in-package :tagfs)
+(in-package :index)
 
 (defmacro expand-list (list)
   (if (listp list)
@@ -22,14 +16,16 @@
      (if it ,@forms)))
 
 (defmacro doseq ((var sequence) &body body)
+  "Loops over a generic sequence executing body for each member"
   (let ((index (gensym))
 	(seq (gensym)))
     `(let ((,seq ,sequence))
        (dotimes (,index (length ,seq))
-	 (let ((,var (elt ,seq,index)))
+	 (let ((,var (elt ,seq ,index)))
 	   ,@body)))))
 
 (defmacro hash (&rest pairs)
+  "Returns a hash table of the key value pais provided"
   (unless (evenp (list-length pairs)) (warn "Uneven pairs in hash declairation"))
   `(let ((hash (make-hash-table :test #'equal)))
      ,@(maplist (lambda (key-val)
@@ -43,17 +39,36 @@
 		   symbols))
 	 ,@body))
 
-(defvar *tagfs-root* #p"/home/illuminati/tagfs-test")
+(defvar *rucksack-root* #p"/home/illuminati/index-test/"
+	"The home directory for the db")
+(defvar *index-root* #p"/home/illuminati/media/"
+	"The directory specifying the root of the db")
+
+(defun subdirectory (directory sub-directory)
+  (unless (directory-pathname-p directory)
+    (cerror "Concatinate anyway." "~A is not a directory.~%" directory))
+  (unless (directory-pathname-p sub-directory)
+    (warn "Converting file path: ~A to directory path.~%" sub-directory))
+  (when (equal (first (pathname-directory sub-directory)) :absolute)
+    (cerror "Treat as a relative path." "~A is an absolute path.~%" sub-directory))
+  (pathname-as-directory (concatenate 'string
+				      (namestring directory)
+				      (namestring sub-directory))))
 
 (labels ((split-mime (mime-string)
+	   "Splits a mime-type string into its type and subtype"
 	   (let ((slash (position #\/ mime-string)))
 	     (if (null slash) 
 		 (warn (format nil "Bad mime-type: ~A" 
 			       mime-string))
 		 (values (subseq mime-string 0 slash)
-			 (subseq mime-string slash))))))
+			 (subseq mime-string (1+ slash)
+				 (1- (length mime-string))))))))
  
   (defun derive-filetype (pathname)
+    "Attempts to get the file type of a file specified by pathname.
+     Returns a keyword :text, :image, :audio, :video, :executable
+     or :other, closest to the actual filetype."
     (multiple-value-bind (type subtype)
 	(split-mime (shell-command 
 		     (format nil 
@@ -78,6 +93,7 @@
   )
 
 (defun path< (firstpath secondpath)
+  "Returns true of firstpath is the alphabetical antecedent of secondpath"
   (string< (namestring firstpath)
 	   (namestring secondpath)))
 
@@ -87,67 +103,70 @@
       :value-type persistent-object
       :key-type pathname))
 
-(with-rucksack (rs *tagfs-root*)
-  (with-transaction ()
-    (defclass tag ()
-      ((file-id      :initarg :file-id :accessor file-id-of
-		     :index :number-index
-		     :unique t
-		     :documentation "Unique identifier")
-       (category     :initarg :category :accessor category-of
-		     :index :case-insensitive-string-index
-		     :initform ""
-		     :documentation "Every tag belongs to a category")
-       (tag          :initarg :tag :accessor tag-of
-		     :index :case-insensitive-string-index
-		     :documentation "Actual tag name"))
-      (:documentation
-       "The tags are what are actually searched and indexed over
-        when looking for files.")
-      (:index t)
-      (:metaclass persistent-class))
-    
-    (defclass file-details ()
-      ((file-id      :initarg :file-id :accessor file-id-of
-		     :index :number-index
-		     :unique t
-		     :documentation "Unique identifier")
-       (pathname     :initarg :pathname :accessor pathname-of
-		     :index :path-index
-		     :unique t
-		     :documentation "The full pathname of the file")
-       (filename     :initarg :filename :accessor filename-of 
-		     :index :string-index
-		     :documentation "The name of the file")
-       (filetype     :initarg :filetype :accessor filetype-of
-		     :index :symbol-index
-		     :documentation "The general kind of file this is")
-       (notes        :initarg :notes :accessor notes-of
-		     :documentation "Free form notes about this file"))
-      (:documentation
-       "Contains information unique to each files indexed.")
-      (:index t)
-      (:metaclass persistent-class)) 
-    ))
+(defun define-classes ()
+  "Defines the two main classes in index; Run this in a transaction
+   if you want to create a new db"
+  (defclass tag ()
+    ((file-id      :initarg :file-id :accessor file-id-of
+		   :index :number-index
+		   :unique t
+		   :documentation "Unique identifier")
+     (category     :initarg :category :accessor category-of
+		   :index :case-insensitive-string-index
+		   :initform ""
+		   :documentation "Every tag belongs to a category")
+     (tag          :initarg :tag :accessor tag-of
+		   :index :case-insensitive-string-index
+		   :documentation "Actual tag name"))
+    (:documentation
+     "The tags are what are actually searched and indexed over
+    when looking for files.")
+    (:index t)
+    (:metaclass persistent-class))
+  
+  (defclass file-details ()
+    ((file-id      :initarg :file-id :accessor file-id-of
+		   :index :number-index
+		   :unique t
+		   :documentation "Unique identifier")
+     (pathname     :initarg :pathname :accessor pathname-of
+		   :index :path-index
+		   :unique t
+		   :documentation "The full pathname of the file")
+     (filename     :initarg :filename :accessor filename-of 
+		   :index :string-index
+		   :documentation "The name of the file")
+     (filetype     :initarg :filetype :accessor filetype-of
+		   :index :symbol-index
+		   :documentation "The general kind of file this is")
+     (notes        :initarg :notes :accessor notes-of
+		   :documentation "Free-form notes about this file"))
+    (:documentation
+     "Contains information unique to each file indexed.")
+    (:index t)
+    (:metaclass persistent-class)))
+
+(eval-when (:load-toplevel)
+  (define-classes))
 
 (defun file-by-id (file-id)
-  (with-rucksack (rs *tagfs-root*)
-    (with-transaction ()
-      (rucksack-do-slot (file 'file-details 'file-id :rucksack rs
-			      :equal file-id)
-	(return-from file-by-id file))))
+  "pull the first file in the db with given id."
+  (with-transaction ()
+    (rucksack-do-slot (file 'file-details 'file-id :equal file-id)
+      (return-from file-by-id file)))
   nil)
 
 (defun file-by-pathname (pathname)
-  (with-rucksack (rs *tagfs-root*)
-    (with-transaction ()
-      (rucksack-map-slot rs 'file-details pathname'
-			 (lambda (file)
-			   (return-from file-by-pathname file))
-			 :equal pathname)))
+  "pull the first file in the db with given pathname."
+  (with-transaction ()
+    (rucksack-map-slot *rucksack* 'file-details 'pathname
+		       (lambda (file)
+			 (return-from file-by-pathname file))
+		       :equal pathname))
   nil)
 
 (defmethod print-object ((tag tag) stream)
+  ;tags need to be able to be printed
   (print-unreadable-object (tag stream :type t)
     (format stream "~A, ~A:~A"
 	    (file-id-of tag) 
@@ -155,25 +174,24 @@
 	    (tag-of tag))))
 
 (defmethod print-object ((file-details file-details ) stream)
+  ;file-details need to be able to be printed
   (print-unreadable-object (file-details stream :type t)
     (with-slots (file-id pathname filename filetype notes) file-details 
       (format stream "~A: ~A; ~A, ~A, ~A"
 	      file-id pathname filename filetype notes))))
 
-(defvar *unique-file-id* 0)
+(defvar *unique-file-id* 0
+  "Used to generate unique file-ids")
 (defmethod initialize-instance :after ((file-details file-details) &key)
   (print (filename-of file-details))
   (unless (file-exists-p (pathname-of file-details))
     (error (format nil 
 		   "Attempted to add file that doesn't exist.~% file: ~A"
 		   (pathname-of file-details))))
-  (print "ASDF2")
   (unless (slot-boundp file-details 'filetype)
     (setf (filetype-of file-details) 
 	  (derive-filetype (pathname-of file-details))))
-  (print "ASDF3")
-  (setf (file-id-of file-details) (incf *unique-file-id*))
-  (print "FDSA"))
+  (setf (file-id-of file-details) (incf *unique-file-id*)))
 
 (defmethod initialize-instance :after ((tag tag) &key)
   (let ((file-id (file-id-of tag)))
@@ -185,65 +203,63 @@
 		     "Attempted to add tag to file that doesn't exist.~% file-id: ~A~% tag: ~A"
 		     file-id tag)))))
 
-(defgeneric remove-file (file-details))
+(defgeneric remove-file (file-details)
+  (:documentation "Removes a file from the db"))
 (defmethod remove-file ((file-details file-details))
-  (with-rucksack (rs *tagfs-root*)
-    (with-transaction ()
-      (when file-details
-	(let ((tags nil))
-	  (rucksack-do-slot (tag 'tag 'file-id :rucksack rs 
-				  :equal (file-id-of file-details))
-	    (push tag tags))
-	  (dolist (tag tags)
-	    (rucksack-delete-object rs tag)))
-	(rucksack-delete-object rs file-details)))))
+  (with-transaction ()
+    (when file-details
+      (let ((tags nil))
+	(rucksack-do-slot (tag 'tag 'file-id :equal (file-id-of file-details))
+	  (push tag tags))
+	(dolist (tag tags)
+	  (rucksack-delete-object *rucksack* tag)))
+      (rucksack-delete-object *rucksack* file-details))))
 
 (defun clear-db ()
-  (with-rucksack (rs *tagfs-root*)
-    (with-transaction ()
-      (let ((items nil)
-	    (count 0))
-	(rucksack-do-class (fd 'file-details :rucksack rs)
-	  (push fd items))
-	(dolist (fd items)
-	  (rucksack-delete-object rs fd))
-	(rucksack-do-class (tag 'tag :rucksack rs)
-	  (push tag items))
-	(dolist (tag items)
-	  (rucksack-delete-object rs tag)))))
+  (with-transaction ()
+    (let ((items nil)
+	  (count 0))
+      (rucksack-do-class (fd 'file-details)
+	(push fd items))
+      (dolist (fd items)
+	(rucksack-delete-object *rucksack* fd))
+      (rucksack-do-class (tag 'tag)
+	(push tag items))
+      (dolist (tag items)
+	(rucksack-delete-object *rucksack* tag))))
   (setf *unique-file-id* 0))
 
 (defun add-file (pathname &optional (update t) (notes ""))
   (format t "Adding file: ~A~%" pathname)
   (if (and (not (directory-pathname-p pathname))
 	   (file-exists-p pathname))
-      (with-rucksack (rs *tagfs-root*)
-	(with-transaction ()
-	  (unless (block nil
-		    (rucksack-do-slot 
-			(fd 'file-details 'pathname :rucksack rs :equal pathname)
-		      (when update
-			(setf (filetype-of fd) (derive-filetype pathname))
-			(setf (notes-of fd) notes))
-		      (return fd)))
-	    (make-instance 'file-details 
-			   :pathname pathname
-			   :filename (pathname-name pathname)
-			   :notes notes))))))
+      (with-transaction ()
+	(unless (block nil
+		  (rucksack-do-slot 
+		      (fd 'file-details 'pathname :equal pathname)
+		    (when update
+		      (setf (filetype-of fd) (derive-filetype pathname))
+		      (setf (notes-of fd) notes))
+		    (return fd)))
+	  (make-instance 'file-details 
+			 :pathname pathname
+			 :filename (pathname-name pathname)
+			 :notes notes)))))
 
-(defun init-db (&optional (root *tagfs-root*))
+(defun init-db (&optional (root *index-root*))
   (format t "Indexing directory: ~A~%" root)
+  (with-transaction ()
+    (define-classes))
   (walk-directory root #'add-file :directories nil))
 
 (defun prune-db ()
-  (with-rucksack (rs *tagfs-root*)
-    (with-transaction ()
-      (let ((fds nil))
-	(rucksack-do-class (fd 'file-details :rucksack rs)
-	  (unless (file-exists-p (pathname-of fd))
-	    (push fd fds)))
-	(dolist (fd fds)
-	  (remove-file fd))))))
+  (with-transaction ()
+    (let ((fds nil))
+      (rucksack-do-class (fd 'file-details)
+	(unless (file-exists-p (pathname-of fd))
+	  (push fd fds)))
+      (dolist (fd fds)
+	(remove-file fd)))))
 
 (defgeneric tag-file (file tag &optional tag-category)
   (:documentation "Adds a tag to a file"))
@@ -258,121 +274,40 @@
   (tag-file (file-by-pathname file) tag tag-category))
 
 (defun list-files-by-tag (tag &optional tag-category)
-  (with-rucksack (rs *tagfs-root*)
-    (with-transaction ()
-      (let ((files nil))
-	(rucksack-do-slot (tg 'tag 'tag :rucksack rs
-			       :equal tag)
-	  (unless (and tag-category
-		       (not (equal (category-of tg) ""))
-		       (not (equal (category-of tg) tag-category)))
-	    (rucksack-do-slot (file 'file-details 'file-id :rucksack rs
-				    :equal (file-id-of tg))
-	      (push file files))))
-	files))))
+  (with-transaction ()
+    (let ((files nil))
+      (rucksack-do-slot (tg 'tag 'tag :equal tag)
+	(unless (and tag-category
+		     (not (equal (category-of tg) ""))
+		     (not (equal (category-of tg) tag-category)))
+	  (rucksack-do-slot (file 'file-details 'file-id :equal (file-id-of tg))
+	    (push file files))))
+      files)))
 
-;;; User interface operations
+;;; --------------------- User interface operations ----------------------
 
-(defvar *cli-options*
-  #+:SBCL sb-ext:*posix-argv*
-  #+:CCL *command-line-argument-list*
-  #+:CLISP ext:*args*
-  #+:LISPWORKS system:*line-arguments-list*
-  #+:CMU extensions:*command-line-words*
- )
-
-(defmacro do-parsed-options ((cli-options bool-params file-params files) &body body)
-  "Given a list of options passed from the the cli and two lists describing how the options
-   should be parsed, parses the list and operates on the resulting option/value pairs."
-  (with-gensyms (option options)
-    (labels ((dispatch-on-option (option bool-case file-case)
-	       `(let ((option ,option))
-		  (cond ((find option (expand-list ,bool-params) :test #'equal)
-			 ,bool-case)
-			((find option (expand-list ,file-params) :test #'equal)
-			 ,file-case)
-			(t (warn (format nil "Bad option: ~A~%" option)))))))
-      `(let ((,options (expand-list ,cli-options)))
-	 (loop while ,options do
-	      (let ((,option (pop ,options)))
-		(cond ((equal ,option "--")
-		       (dolist (,option ,options)
-			 (push ,option ,files))
-		       (return))
-		      ((and (equal (char ,option 0) #\-)
-			    (not (equal (char ,option 1) #\-)))
-		       (doseq (char (subseq ,option 1))
-			 ,(dispatch-on-option 
-			   `(string char)
-			   `(let ((value t)) ,@body)
-			   `(progn
-			      (if (= (length ,option) (1+ (position char ,option)))
-				  (let ((value (pop ,options))) ,@body)
-				  (let ((value (subseq ,option (1+ (position char ,option))))) 
-				    ,@body))
-			      (return)))))
-		      ((and (equal (char ,option 0) #\-)
-			    (equal (char ,option 1) #\-)
-			    (not (equal (char ,option 2) #\-)))
-		       ,(dispatch-on-option 
-			 `(subseq ,option 2)
-			 `(let ((value t)) ,@body)
-			 `(let ((value (pop ,options))) ,@body)))
-		      (t (push ,option ,files)))))))))
-
-(defmacro with-cli-options ((&optional (cli-options *cli-options*) (files 'files)) option-variables &body body)
-  "Binds a series of vairables to values passed in through cli options"
-  (let ((bool-params nil)
-	(file-params nil)
-	(var-bindings nil)
-	(var-setters nil)
-	(file-vars? nil))
-    (dolist (symbol option-variables)
-      (if (eql symbol '&file-parameters)
-	  (setf file-vars? t)
-	  (flet ((so-not-used? (so)
-		   (unless (or (find so bool-params :test #'equal) 
-			       (find so file-params :test #'equal))
-		     so)))
-	    (let ((long-option (string-downcase (symbol-name symbol)))
-		  (short-option (aif (so-not-used? (string-downcase (subseq (symbol-name symbol) 0 1)))
-				  it
-				  (so-not-used? (subseq (symbol-name symbol) 0 1)))))
-	      (push `(,symbol nil) var-bindings)
-	      (push `((or (equal option ,long-option) ,(if short-option `(equal option ,short-option)))
-		      (setf ,symbol value))
-		    var-setters)
-	      (if file-vars?
-		  (progn (push long-option file-params)
-			 (if short-option (push short-option file-params)))
-		  (progn (push long-option bool-params)
-			 (if short-option (push short-option bool-params))))))))
-    `(let ,(cons `(,files nil) var-bindings)
-       (do-parsed-options (,(rest cli-options) ,bool-params ,file-params ,files)
-	 (cond ,@var-setters))
+(defmacro with-index (path &body body)
+  `(let* ((*index-root* ,path)
+	  (*rucksack-root* (subdirectory *index-root* ".index/")))
+     (with-rucksack (*rucksack* *rucksack-root*)
        ,@body)))
 
-(defun parse-cli-options (options option-pattern)
-  (let ((bool-params (subseq option-pattern 0 (position '&parameters option-pattern)))
-	(file-params (subseq option-pattern 
-			      (aif (position '&parameters option-pattern) 
-				(1+ it) 
-				(list-length option-pattern))))
-	(parsed-options nil)
-	(files nil))
-    (do-parsed-options (options bool-params file-params files)
-      (push (cons option value) parsed-options))
-    (values parsed-options files)))
-
-;;---------------------------------------
-
-(with-cli-options () (index tag query &file-parameters path)
-  (unless path (setf path (pop files)))
-  (let ((*tagfs-root* path))
-    (cond (index (init-db)
-		 (prune-db))
-	  (tag (tag-file path (first files)))
-	  (query (print (list-files-by-tag (first files)))))))
-	 
-
-(quit)
+(defun toplevel ()
+  (with-cli-options () (index tag query &parameters path file &free files)
+    (unless path (setf path (pop files)))
+    (setf path (pathname path))
+    (print index)
+    (print tag)
+    (print query)
+    (print path)
+    (print file)
+    (setf *index-root* *default-pathname-defaults*)
+    (setf *rucksack-root* (subdirectory *index-root* ".index/"))
+    (with-rucksack (*rucksack* *index-root*)
+      (cond (index (init-db)
+		   (prune-db))
+	    (tag (tag-file (pathname file) (first files)))
+	    (query (print (list-files-by-tag (first files)))))))
+  
+  #+sbcl(sb-ext:quit)
+  )
