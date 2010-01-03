@@ -6,5 +6,6 @@
   :serial t
   :components ((:file "index"))
   :depends-on (:cl-fad
+	       :unix-options
 	       :trivial-shell
 	       :rucksack))

@@ -109,7 +109,6 @@
   (defclass tag ()
     ((file-id      :initarg :file-id :accessor file-id-of
 		   :index :number-index
-		   :unique t
 		   :documentation "Unique identifier")
      (category     :initarg :category :accessor category-of
 		   :index :case-insensitive-string-index
@@ -151,18 +150,16 @@
 
 (defun file-by-id (file-id)
   "pull the first file in the db with given id."
-  (with-transaction ()
-    (rucksack-do-slot (file 'file-details 'file-id :equal file-id)
-      (return-from file-by-id file)))
+  (rucksack-do-slot (file 'file-details 'file-id :equal file-id)
+    (return-from file-by-id file))
   nil)
 
 (defun file-by-pathname (pathname)
   "pull the first file in the db with given pathname."
-  (with-transaction ()
-    (rucksack-map-slot *rucksack* 'file-details 'pathname
-		       (lambda (file)
-			 (return-from file-by-pathname file))
-		       :equal pathname))
+  (rucksack-map-slot *rucksack* 'file-details 'pathname
+		     (lambda (file)
+		       (return-from file-by-pathname file))
+		     :equal pathname)
   nil)
 
 (defmethod print-object ((tag tag) stream)
@@ -206,14 +203,13 @@
 (defgeneric remove-file (file-details)
   (:documentation "Removes a file from the db"))
 (defmethod remove-file ((file-details file-details))
-  (with-transaction ()
-    (when file-details
-      (let ((tags nil))
-	(rucksack-do-slot (tag 'tag 'file-id :equal (file-id-of file-details))
-	  (push tag tags))
-	(dolist (tag tags)
-	  (rucksack-delete-object *rucksack* tag)))
-      (rucksack-delete-object *rucksack* file-details))))
+  (when file-details
+    (let ((tags nil))
+      (rucksack-do-slot (tag 'tag 'file-id :equal (file-id-of file-details))
+	(push tag tags))
+      (dolist (tag tags)
+	(rucksack-delete-object *rucksack* tag)))
+    (rucksack-delete-object *rucksack* file-details)))
 
 (defun clear-db ()
   (with-transaction ()
@@ -233,34 +229,33 @@
   (format t "Adding file: ~A~%" pathname)
   (if (and (not (directory-pathname-p pathname))
 	   (file-exists-p pathname))
-      (with-transaction ()
-	(unless (block nil
-		  (rucksack-do-slot 
-		      (fd 'file-details 'pathname :equal pathname)
-		    (when update
-		      (setf (filetype-of fd) (derive-filetype pathname))
-		      (setf (notes-of fd) notes))
-		    (return fd)))
-	  (make-instance 'file-details 
-			 :pathname pathname
-			 :filename (pathname-name pathname)
-			 :notes notes)))))
+      (unless (block nil
+		(rucksack-do-slot 
+		    (fd 'file-details 'pathname :equal pathname)
+		  (when update
+		    (setf (filetype-of fd) (derive-filetype pathname))
+		    (setf (notes-of fd) notes))
+		  (return fd)))
+	(make-instance 'file-details 
+		       :pathname pathname
+		       :filename (pathname-name pathname)
+		       :notes notes))))
 
 (defun init-db (&optional (root *index-root*))
   (format t "Indexing directory: ~A~%" root)
-  (with-transaction ()
-    (define-classes))
+  (define-classes)
   (walk-directory root #'add-file :directories nil))
 
 (defun prune-db ()
-  (with-transaction ()
-    (let ((fds nil))
-      (rucksack-do-class (fd 'file-details)
-	(unless (file-exists-p (pathname-of fd))
-	  (push fd fds)))
-      (dolist (fd fds)
-	(remove-file fd)))))
+  "removes files that don't exists from the path"
+  (let ((fds nil))
+    (rucksack-do-class (fd 'file-details)
+      (unless (file-exists-p (pathname-of fd))
+	(push fd fds)))
+    (dolist (fd fds)
+      (remove-file fd))))
 
+;tagging individual files
 (defgeneric tag-file (file tag &optional tag-category)
   (:documentation "Adds a tag to a file"))
 
@@ -273,16 +268,50 @@
 (defmethod tag-file ((file pathname) tag &optional (tag-category ""))
   (tag-file (file-by-pathname file) tag tag-category))
 
+;tagging groups of files
+(defun tag-files-with-string (files tag &optional category)
+  (mapcar (lambda (file) (tag-file file tag category)) files))
+
+(defun tag-files-with-strings (files tags &optional categories)
+  (mapcar #'tag-file files tags categories))
+
+(defun tag-files-by-method (files method)
+  "Run method for each file-details object in files and tags it with the output"
+  (mapcar (lambda (file)
+	    (multiple-value-bind (tags categories)
+		(funcall method file)
+	      (labels ((map-tag (tags categories)
+			 (when tags
+			   (funcall method file (first tags) (first categories))
+			   (map-tag (rest tags) (rest categories)))))
+		(map-tag tags categories))))
+	  files))
+
+(defgeneric tag-files (files tags &optional categories)
+  (:documentation "Adds stags to multiple files"))
+
+(defmethod tag-files (files (tags string) &optional categories)
+  (tag-files-with-string files tags categories))
+
+(defmethod tag-files (files (tags list) &optional categories)
+  (if (and (listp categories)
+	   (= (list-length categories)
+	      (list-length tags)))
+      (tag-files-with-strings files tags categories)
+      (tag-files-with-strings files tags)))
+
+(defmethod tag-files (files (tags function) &optional categories)
+  (tag-files-by-method files tags))
+
 (defun list-files-by-tag (tag &optional tag-category)
-  (with-transaction ()
-    (let ((files nil))
-      (rucksack-do-slot (tg 'tag 'tag :equal tag)
-	(unless (and tag-category
-		     (not (equal (category-of tg) ""))
-		     (not (equal (category-of tg) tag-category)))
-	  (rucksack-do-slot (file 'file-details 'file-id :equal (file-id-of tg))
-	    (push file files))))
-      files)))
+  (let ((files nil))
+    (rucksack-do-slot (tg 'tag 'tag :equal tag)
+      (unless (and tag-category
+		   (not (equal (category-of tg) ""))
+		   (not (equal (category-of tg) tag-category)))
+	(rucksack-do-slot (file 'file-details 'file-id :equal (file-id-of tg))
+	  (push file files))))
+    files))
 
 ;;; --------------------- User interface operations ----------------------
 
@@ -290,7 +319,8 @@
   `(let* ((*index-root* ,path)
 	  (*rucksack-root* (subdirectory *index-root* ".index/")))
      (with-rucksack (*rucksack* *rucksack-root*)
-       ,@body)))
+       (with-transaction ()
+	 ,@body))))
 
 (defun toplevel ()
   (with-cli-options () (index tag query &parameters path file &free files)
@@ -311,3 +341,8 @@
   
   #+sbcl(sb-ext:quit)
   )
+
+;
+; !tag:category
+;
+;
