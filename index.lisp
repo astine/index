@@ -342,7 +342,12 @@
   #+sbcl(sb-ext:quit)
   )
 
+; cases:
 ;
+; - initialize db
+; - add files/directories
+; - remove files/directories
+; - tag files
+; - untag files
+; - 
 ; !tag:category
-;
-;
